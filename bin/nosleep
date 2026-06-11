@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Tell the machine to stay awake: toggles a transient systemd user unit
+# holding a logind block lock on sleep and lid-close. The unit is the
+# single source of truth (no daemon or config state to desync) and dies on
+# reboot/logout, so normal sleep behavior always comes back on its own.
+# The GNOME extension in this repo drives the same unit.
+set -euo pipefail
+
+unit=nosleep.service
+duration_re='^[0-9]+(\.[0-9]+)?[smhd]?$'
+
+active() {
+  systemctl --user --quiet is-active "$unit"
+}
+
+start() {
+  local duration="${1:-infinity}"
+  # Validate before systemd-run: sleep rejecting the duration would kill
+  # the inhibitor instantly while we report success
+  if [ "$duration" != infinity ] && ! [[ "$duration" =~ $duration_re ]]; then
+    echo "nosleep: invalid duration '$duration'" >&2
+    exit 2
+  fi
+  # Replace any running instance so a new duration takes effect
+  systemctl --user stop "$unit" 2>/dev/null || true
+  # systemd-run resolves systemd-inhibit from our PATH; the inner sleep is
+  # resolved by systemd-inhibit inside the unit's environment
+  systemd-run --user --quiet --collect --unit=nosleep \
+    --description="Hold sleep/lid-switch inhibitor (nosleep)" \
+    systemd-inhibit \
+      --what=sleep:handle-lid-switch \
+      --mode=block \
+      --who=nosleep \
+      --why="user asked the machine to stay awake" \
+    sleep "$duration"
+  if [ "$duration" = infinity ]; then
+    echo "nosleep: on (until 'nosleep off')"
+  else
+    echo "nosleep: on for $duration"
+  fi
+}
+
+stop() {
+  if active; then
+    systemctl --user stop "$unit"
+    echo "nosleep: off"
+  else
+    echo "nosleep: already off"
+  fi
+}
+
+status() {
+  if active; then
+    echo "nosleep: on (since $(systemctl --user show "$unit" --property=ActiveEnterTimestamp --value))"
+  else
+    echo "nosleep: off"
+  fi
+}
+
+cmd="${1:-toggle}"
+case "$cmd" in
+  on) start "${2:-}" ;;
+  off) stop ;;
+  status) status ;;
+  toggle) if active; then stop; else start; fi ;;
+  *)
+    if [[ "$cmd" =~ $duration_re ]]; then
+      start "$cmd"
+    else
+      echo "usage: nosleep [on [duration] | off | status | <duration>]   e.g. 'nosleep 2h'" >&2
+      exit 2
+    fi
+    ;;
+esac

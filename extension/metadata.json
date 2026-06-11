@@ -1,0 +1,9 @@
+{
+  "uuid": "nosleep@ilyasturki.com",
+  "name": "Nosleep",
+  "description": "Keep the machine awake: a Quick Settings toggle that blocks suspend and lid-switch sleep by holding a systemd-inhibit lock inside a transient systemd user unit.\n\nThe unit is the single source of truth — the toggle can never desync from the real inhibitor, it survives gnome-shell restarts, and it dies on logout so normal sleep behavior always comes back on its own. Scriptable from the terminal with the companion nosleep CLI (e.g. 'nosleep 2h').\n\nNote: this blocks sleep, not idle — the screen may still blank or lock.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/ilyasturki/nosleep",
+  "gettext-domain": "nosleep@ilyasturki.com",
+  "version-name": "1.0.0"
+}
