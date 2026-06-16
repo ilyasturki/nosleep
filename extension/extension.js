@@ -186,6 +186,10 @@ export default class NosleepExtension extends Extension {
     }
 
     disable() {
+        // unlock-dialog (metadata.json): we stay enabled on the lock screen so
+        // the toggle/indicator remain usable there. Safe to expose — the UI only
+        // starts/stops a sleep inhibitor and reveals nothing — and destroy()
+        // still fully tears the indicator down on real session teardown.
         this._indicator?.destroy();
         this._indicator = null;
     }
