@@ -6,5 +6,5 @@
   "session-modes": ["user", "unlock-dialog"],
   "url": "https://github.com/ilyasturki/nosleep",
   "gettext-domain": "nosleep@ilyasturki.com",
-  "version-name": "1.0.1"
+  "version-name": "1.0.2"
 }
