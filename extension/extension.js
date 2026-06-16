@@ -44,7 +44,7 @@ class NosleepIndicator extends SystemIndicator {
             gicon,
             toggleMode: false,
         });
-        this._toggleClickedId = this._toggle.connect('clicked', () => this._toggleUnit());
+        this._toggle.connectObject('clicked', () => this._toggleUnit(), this);
         this.quickSettingsItems.push(this._toggle);
 
         this._bus = Gio.DBus.session;
@@ -173,7 +173,7 @@ class NosleepIndicator extends SystemIndicator {
             this._bus.signal_unsubscribe(id);
         this._signalIds = [];
         this._managerCall = () => {};
-        this._toggle.disconnect(this._toggleClickedId);
+        this._toggle.disconnectObject(this);
         this.quickSettingsItems.forEach(item => item.destroy());
         super.destroy();
     }
