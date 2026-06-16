@@ -48,7 +48,8 @@ nix run github:ilyasturki/nosleep
 ## GNOME extension
 
 A Quick Settings toggle ("Stay Awake") with a top-bar indicator while
-active. Supports GNOME Shell 45–50.
+active. The toggle and indicator stay on the lock screen, so you can
+confirm or flip stay-awake without unlocking. Supports GNOME Shell 45–50.
 
 - From extensions.gnome.org: *pending review*
 - Manual: `make install`, then re-log and enable with

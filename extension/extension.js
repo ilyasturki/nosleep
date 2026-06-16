@@ -4,6 +4,11 @@
 // `checked` and the indicator follow the real unit state, so the UI can
 // never desync from (or lose) the inhibitor. The bundled nosleep CLI
 // drives the same unit, so either side can stop what the other started.
+//
+// Runs in the unlock-dialog session mode too (see metadata.json), so the
+// toggle and indicator stay on the lock screen — letting you confirm or
+// flip stay-awake without unlocking. Safe to expose there: the UI only
+// starts/stops a sleep inhibitor and reveals nothing.
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
