@@ -1,7 +1,7 @@
 {
   "uuid": "nosleep@ilyasturki.com",
   "name": "Nosleep",
-  "description": "A Quick Settings toggle (plus a companion CLI) that blocks suspend and lid-switch sleep by holding a systemd-inhibit lock in a transient systemd user unit. The unit is the single source of truth, so the toggle can never desync from the real inhibitor and normal sleep returns on logout.\n\nNote: this blocks sleep, not idle — the screen may still blank or lock.",
+  "description": "Two Quick Settings toggles (plus a companion CLI): \"Stay Awake\" blocks suspend and lid-switch sleep, and \"Keep Screen On\" blocks GNOME idle so the screen never blanks or locks. Each holds its inhibitor in its own transient systemd user unit — the single source of truth, so a toggle can never desync from the real inhibitor and normal behavior returns on logout.",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "session-modes": ["user", "unlock-dialog"],
   "url": "https://github.com/ilyasturki/nosleep",

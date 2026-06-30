@@ -1,14 +1,24 @@
-// Quick Settings toggle + top-bar indicator for the nosleep inhibitor.
-// Deliberately stateless: the systemd user unit is the single source of
-// truth. Clicking only starts/stops the transient unit over D-Bus;
-// `checked` and the indicator follow the real unit state, so the UI can
-// never desync from (or lose) the inhibitor. The bundled nosleep CLI
-// drives the same unit, so either side can stop what the other started.
+// Quick Settings toggles + top-bar indicator for the nosleep inhibitors.
+// Two independent stay-awake controls, each backed by its own transient
+// systemd user unit:
+//   • "Stay Awake"     — blocks suspend and lid-switch sleep (logind lock)
+//   • "Keep Screen On" — blocks GNOME idle, so the screen never blanks/locks
+//
+// Deliberately stateless: each systemd user unit is the single source of
+// truth. Clicking only starts/stops the transient unit over D-Bus; a
+// toggle's `checked` and the indicator follow the real unit state, so the
+// UI can never desync from (or lose) an inhibitor. The bundled nosleep CLI
+// drives the sleep unit, so either side can stop what the other started.
 //
 // Runs in the unlock-dialog session mode too (see metadata.json), so the
-// toggle and indicator stay on the lock screen — letting you confirm or
+// toggles and indicator stay on the lock screen — letting you confirm or
 // flip stay-awake without unlocking. Safe to expose there: the UI only
-// starts/stops a sleep inhibitor and reveals nothing.
+// starts/stops inhibitors and reveals nothing.
+//
+// Why two mechanisms? A logind sleep lock does not keep the GNOME screen
+// on: screen blanking is driven by gnome-shell's idle timer, which only
+// honors GNOME session inhibitors. So "Keep Screen On" holds its lock via
+// gnome-session-inhibit rather than systemd-inhibit.
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
@@ -20,49 +30,55 @@ import {QuickToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quick
 const BUS_NAME = 'org.freedesktop.systemd1';
 const MANAGER_PATH = '/org/freedesktop/systemd1';
 const MANAGER_IFACE = 'org.freedesktop.systemd1.Manager';
-const UNIT = 'nosleep.service';
-// systemd's D-Bus escaping of "nosleep.service" is deterministic, so the
-// path can be watched even while the transient unit does not exist
-const UNIT_PATH = '/org/freedesktop/systemd1/unit/nosleep_2eservice';
 
-const NosleepIndicator = GObject.registerClass(
-class NosleepIndicator extends SystemIndicator {
-    constructor(extensionObject) {
-        super();
+// Mirror systemd's object-path escaping so a unit's path can be watched even
+// while its transient unit does not exist: every byte outside [A-Za-z0-9]
+// (and a leading digit) becomes _<hex>. e.g. nosleep.service ->
+// .../unit/nosleep_2eservice; nosleep-screen.service -> nosleep_2dscreen_2eservice.
+function unitObjectPath(unit) {
+    let escaped = '';
+    for (let i = 0; i < unit.length; i++) {
+        const ch = unit[i];
+        if (/[A-Za-z0-9]/.test(ch) && !(i === 0 && ch >= '0' && ch <= '9'))
+            escaped += ch;
+        else
+            escaped += `_${unit.charCodeAt(i).toString(16).padStart(2, '0')}`;
+    }
+    return `${MANAGER_PATH}/unit/${escaped}`;
+}
 
-        const gicon = Gio.icon_new_for_string(
-            `${extensionObject.path}/icons/nosleep-symbolic.svg`);
-
-        this._icon = this._addIndicator();
-        this._icon.gicon = gicon;
-        this._icon.visible = false;
+// Drives one transient-unit-backed toggle: owns its QuickToggle, watches its
+// unit's ActiveState over D-Bus, and mirrors it onto `checked`. The unit is
+// the source of truth — a click only starts/stops it; state comes back via
+// signals. buildArgv() returns the inhibitor command (absolute paths, as
+// ExecStart requires) or null when a required program is missing.
+class InhibitorToggle {
+    constructor(bus, cancellable, {title, gicon, unit, description, buildArgv, onChanged}) {
+        this._bus = bus;
+        this._cancellable = cancellable;
+        this._unit = unit;
+        this._unitPath = unitObjectPath(unit);
+        this._description = description;
+        this._buildArgv = buildArgv;
+        this._onChanged = onChanged;
+        this.active = false;
 
         // toggleMode off: a click must not flip `checked` optimistically,
         // only the unit-state refresh may
-        this._toggle = new QuickToggle({
-            title: _('Stay Awake'),
-            gicon,
-            toggleMode: false,
-        });
-        this._toggle.connectObject('clicked', () => this._toggleUnit(), this);
-        this.quickSettingsItems.push(this._toggle);
+        this.toggle = new QuickToggle({title, gicon, toggleMode: false});
+        this.toggle.connectObject('clicked', () => this._toggleUnit(), this);
 
-        this._bus = Gio.DBus.session;
-        this._cancellable = new Gio.Cancellable();
-
-        // systemd only emits unit signals to explicit subscribers
-        this._managerCall('Subscribe', null);
         this._signalIds = [
             this._bus.signal_subscribe(
                 BUS_NAME, 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
-                UNIT_PATH, null, Gio.DBusSignalFlags.NONE,
+                this._unitPath, null, Gio.DBusSignalFlags.NONE,
                 () => this._refresh()),
             ...['UnitNew', 'UnitRemoved'].map(signal =>
                 this._bus.signal_subscribe(
                     BUS_NAME, MANAGER_IFACE, signal,
                     MANAGER_PATH, null, Gio.DBusSignalFlags.NONE,
                     (conn, sender, path, iface, name, params) => {
-                        if (params.deepUnpack()[0] === UNIT)
+                        if (params.deepUnpack()[0] === this._unit)
                             this._refresh();
                     })),
         ];
@@ -91,7 +107,7 @@ class NosleepIndicator extends SystemIndicator {
         // subscribe to, so every refresh would schedule the next one forever.
         this._bus.call(
             BUS_NAME, MANAGER_PATH, MANAGER_IFACE, 'GetUnit',
-            new GLib.Variant('(s)', [UNIT]), null,
+            new GLib.Variant('(s)', [this._unit]), null,
             Gio.DBusCallFlags.NONE, -1, this._cancellable,
             (bus, res) => {
                 let path;
@@ -127,13 +143,14 @@ class NosleepIndicator extends SystemIndicator {
     }
 
     _setActive(active) {
-        this._toggle.checked = active;
-        this._icon.visible = active;
+        this.active = active;
+        this.toggle.checked = active;
+        this._onChanged();
     }
 
     _toggleUnit() {
-        if (this._toggle.checked)
-            this._managerCall('StopUnit', new GLib.Variant('(ss)', [UNIT, 'replace']));
+        if (this.toggle.checked)
+            this._managerCall('StopUnit', new GLib.Variant('(ss)', [this._unit, 'replace']));
         else
             this._startUnit();
     }
@@ -141,25 +158,13 @@ class NosleepIndicator extends SystemIndicator {
     _startUnit() {
         // Same transient unit systemd-run would create: an inhibitor lock
         // held by a sleeping process, GC'd by systemd once it stops.
-        // Resolved to absolute paths because ExecStart requires them.
-        const inhibit = GLib.find_program_in_path('systemd-inhibit');
-        const sleep = GLib.find_program_in_path('sleep');
-        if (!inhibit || !sleep) {
-            console.error('nosleep: systemd-inhibit or sleep not found in PATH');
+        const argv = this._buildArgv();
+        if (!argv)
             return;
-        }
-        const argv = [
-            inhibit,
-            '--what=sleep:handle-lid-switch',
-            '--mode=block',
-            '--who=nosleep',
-            '--why=user asked the machine to stay awake',
-            sleep, 'infinity',
-        ];
         this._managerCall('StartTransientUnit', new GLib.Variant('(ssa(sv)a(sa(sv)))', [
-            UNIT, 'replace',
+            this._unit, 'replace',
             [
-                ['Description', new GLib.Variant('s', 'Hold sleep/lid-switch inhibitor (nosleep)')],
+                ['Description', new GLib.Variant('s', this._description)],
                 ['CollectMode', new GLib.Variant('s', 'inactive-or-failed')],
                 ['ExecStart', new GLib.Variant('a(sasb)', [[argv[0], argv, false]])],
             ],
@@ -168,13 +173,127 @@ class NosleepIndicator extends SystemIndicator {
     }
 
     destroy() {
-        this._cancellable.cancel();
         for (const id of this._signalIds)
             this._bus.signal_unsubscribe(id);
         this._signalIds = [];
         this._managerCall = () => {};
-        this._toggle.disconnectObject(this);
-        this.quickSettingsItems.forEach(item => item.destroy());
+        this.toggle.disconnectObject(this);
+        this.toggle.destroy();
+    }
+}
+
+const NosleepIndicator = GObject.registerClass(
+class NosleepIndicator extends SystemIndicator {
+    constructor(extensionObject) {
+        super();
+
+        const gicon = Gio.icon_new_for_string(
+            `${extensionObject.path}/icons/nosleep-symbolic.svg`);
+        // Keep Screen On gets a distinct, display-themed icon so the two
+        // toggles read differently at a glance; a bare name resolves to a
+        // themed icon from the active icon theme.
+        const screenGicon = Gio.icon_new_for_string('video-display-symbolic');
+
+        // One shared top-bar indicator: visible while either inhibitor is on
+        this._icon = this._addIndicator();
+        this._icon.gicon = gicon;
+        this._icon.visible = false;
+
+        this._bus = Gio.DBus.session;
+        this._cancellable = new Gio.Cancellable();
+
+        // systemd only emits unit signals to explicit subscribers; one
+        // Subscribe on the shared session connection covers both toggles
+        this._bus.call(
+            BUS_NAME, MANAGER_PATH, MANAGER_IFACE, 'Subscribe', null, null,
+            Gio.DBusCallFlags.NONE, -1, this._cancellable,
+            (bus, res) => {
+                try {
+                    bus.call_finish(res);
+                } catch (e) {
+                    if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                        console.warn(`nosleep: Subscribe failed: ${e.message}`);
+                }
+            });
+
+        const onChanged = () => this._updateIndicator();
+        this._toggles = [
+            new InhibitorToggle(this._bus, this._cancellable, {
+                title: _('Stay Awake'),
+                gicon,
+                unit: 'nosleep.service',
+                description: 'Hold sleep/lid-switch inhibitor (nosleep)',
+                onChanged,
+                // Resolved to absolute paths because ExecStart requires them.
+                buildArgv: () => {
+                    const inhibit = GLib.find_program_in_path('systemd-inhibit');
+                    const sleep = GLib.find_program_in_path('sleep');
+                    if (!inhibit || !sleep) {
+                        console.error('nosleep: systemd-inhibit or sleep not found in PATH');
+                        return null;
+                    }
+                    return [
+                        inhibit,
+                        '--what=sleep:handle-lid-switch',
+                        '--mode=block',
+                        '--who=nosleep',
+                        '--why=user asked the machine to stay awake',
+                        sleep, 'infinity',
+                    ];
+                },
+            }),
+            new InhibitorToggle(this._bus, this._cancellable, {
+                title: _('Keep Screen On'),
+                gicon: screenGicon,
+                unit: 'nosleep-screen.service',
+                description: 'Hold idle inhibitor (nosleep)',
+                onChanged,
+                // gnome-session-inhibit, not systemd-inhibit: gnome-shell's
+                // idle timer (screen blank/lock) only honors GNOME session
+                // inhibitors, not a logind idle lock. Absolute paths for
+                // ExecStart; the inner sleep holds the inhibitor until stopped.
+                buildArgv: () => {
+                    const inhibit = GLib.find_program_in_path('gnome-session-inhibit');
+                    const sleep = GLib.find_program_in_path('sleep');
+                    if (!inhibit || !sleep) {
+                        console.error('nosleep: gnome-session-inhibit or sleep not found in PATH');
+                        return null;
+                    }
+                    return [
+                        inhibit,
+                        '--inhibit=idle',
+                        '--app-id=nosleep',
+                        '--reason=user asked to keep the screen on',
+                        sleep, 'infinity',
+                    ];
+                },
+            }),
+        ];
+        for (const toggle of this._toggles)
+            this.quickSettingsItems.push(toggle.toggle);
+    }
+
+    _updateIndicator() {
+        this._icon.visible = this._toggles.some(toggle => toggle.active);
+    }
+
+    // panel.js addExternalIndicator inserts our toggles before a sibling;
+    // with no "background apps" item present that sibling is null, so each
+    // insert lands at index 0 and the pushed order comes out reversed. Pin
+    // it explicitly so Stay Awake always precedes Keep Screen On, in either
+    // case (and across shell versions).
+    pinItemOrder() {
+        const [first, second] = this._toggles.map(toggle => toggle.toggle);
+        const grid = first.get_parent();
+        if (grid && second.get_parent() === grid)
+            grid.set_child_below_sibling(first, second);
+    }
+
+    destroy() {
+        this._cancellable.cancel();
+        for (const toggle of this._toggles)
+            toggle.destroy();
+        this._toggles = [];
         super.destroy();
     }
 });
@@ -183,12 +302,13 @@ export default class NosleepExtension extends Extension {
     enable() {
         this._indicator = new NosleepIndicator(this);
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
+        this._indicator.pinItemOrder();
     }
 
     disable() {
         // unlock-dialog (metadata.json): we stay enabled on the lock screen so
-        // the toggle/indicator remain usable there. Safe to expose — the UI only
-        // starts/stops a sleep inhibitor and reveals nothing — and destroy()
+        // the toggles/indicator remain usable there. Safe to expose — the UI
+        // only starts/stops inhibitors and reveals nothing — and destroy()
         // still fully tears the indicator down on real session teardown.
         this._indicator?.destroy();
         this._indicator = null;

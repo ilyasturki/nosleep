@@ -25,6 +25,11 @@
             runtimeInputs = [
               pkgs.systemd
               pkgs.coreutils
+              # `nosleep screen` calls gnome-session-inhibit, deliberately NOT
+              # declared here: it ships only inside gnome-session, whose closure
+              # is ~2 GiB. writeShellApplication prepends to PATH, so the running
+              # GNOME session (which always has the binary) provides it; the
+              # script errors cleanly if it is ever missing.
             ];
             text = builtins.readFile ./bin/nosleep;
           };

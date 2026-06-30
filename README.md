@@ -3,8 +3,10 @@
 Tell the machine to stay awake.
 
 A GNOME Quick Settings toggle and a CLI that block suspend and lid-switch
-sleep. Both drive the same transient systemd user unit, so they can never
-disagree about whether the machine is allowed to sleep.
+sleep, plus a second toggle that keeps the screen on. Each is backed by a
+transient systemd user unit that *is* the state, so the controls can never
+desync from it — and because the CLI and sleep toggle share one unit, they
+can never disagree about whether the machine may sleep.
 
 <p align="center">
   <img src="docs/quick-settings.png" width="380"
@@ -21,7 +23,7 @@ nosleep keeps no state at all. Turning it on creates a transient systemd
 user unit (`nosleep.service`) that holds a `systemd-inhibit` block lock on
 sleep and lid-close. The unit **is** the state:
 
-- The toggle and indicator mirror the real unit over D-Bus, so they cannot
+- The toggles and indicator mirror their units over D-Bus, so they cannot
   desync, even across `gnome-shell` restarts.
 - The unit dies on logout/reboot, so normal sleep behavior always comes
   back on its own.
@@ -31,23 +33,31 @@ sleep and lid-close. The unit **is** the state:
 
 **Scope.** *Stay Awake* blocks *sleep* (suspend and lid-close), not *idle* —
 it keeps the machine running through a download or a long job, but the screen
-may still blank and lock. The extension adds a second, independent *Keep
-Screen On* toggle that also blocks GNOME idle, so the screen never blanks: a
-presentation mode. Use either, or both — block sleep but let the screen lock
-for security, or keep everything awake. The CLI drives *Stay Awake* only.
+may still blank and lock. *Keep Screen On* also blocks GNOME idle, so the
+screen never blanks or locks: a presentation mode. Use either, or both —
+block sleep but let the screen lock for security, or keep everything awake.
+Both work from the Quick Settings toggles and the CLI (`nosleep` and
+`nosleep screen`).
 
 ## CLI
 
 ```
-nosleep            # toggle
-nosleep 2h         # stay awake for 2 hours (also: 90m, 45s, 1d)
-nosleep on         # stay awake until turned off
+nosleep                # toggle stay-awake (blocks suspend + lid)
+nosleep 2h             # stay awake for 2 hours (also: 90m, 45s, 1d)
+nosleep on             # stay awake until turned off
 nosleep off
 nosleep status
+
+nosleep screen         # toggle keep-screen-on (blocks GNOME idle)
+nosleep screen on      # keep the screen on until turned off
+nosleep screen 45m     # keep the screen on for 45 minutes
+nosleep screen off
+nosleep screen status
 ```
 
-Requires only `bash` and systemd. Install by dropping `bin/nosleep` on your
-`PATH`, or on Nix:
+Requires `bash` and systemd; `nosleep screen` also needs
+`gnome-session-inhibit`, which any GNOME session already provides. Install by
+dropping `bin/nosleep` on your `PATH`, or on Nix:
 
 ```
 nix run github:ilyasturki/nosleep

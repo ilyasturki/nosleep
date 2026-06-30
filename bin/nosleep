@@ -4,10 +4,38 @@
 # single source of truth (no daemon or config state to desync) and dies on
 # reboot/logout, so normal sleep behavior always comes back on its own.
 # The GNOME extension in this repo drives the same unit.
+#
+# `nosleep screen ...` toggles a second unit (nosleep-screen.service) that
+# holds a GNOME idle inhibitor via gnome-session-inhibit, so the screen
+# won't blank or lock — the same unit the extension's "Keep Screen On"
+# toggle drives. (A logind idle lock would not stop GNOME blanking the
+# screen; only a GNOME session inhibitor does, hence gnome-session-inhibit.)
 set -euo pipefail
 
-unit=nosleep.service
 duration_re='^[0-9]+(\.[0-9]+)?[smhd]?$'
+
+# Target selection: `nosleep screen ...` retargets every verb below to the
+# screen/idle inhibitor; otherwise we drive the sleep inhibitor. Each target
+# is the same unit its Quick Settings toggle drives, so CLI and extension
+# stay interchangeable.
+if [ "${1:-}" = screen ]; then
+  shift
+  target="screen"
+  unit=nosleep-screen.service
+  unit_name=nosleep-screen
+  description="Hold idle inhibitor (nosleep)"
+  inhibit=(gnome-session-inhibit --inhibit=idle --app-id=nosleep
+           --reason="user asked to keep the screen on")
+  label="screen "
+else
+  target="sleep"
+  unit=nosleep.service
+  unit_name=nosleep
+  description="Hold sleep/lid-switch inhibitor (nosleep)"
+  inhibit=(systemd-inhibit --what=sleep:handle-lid-switch --mode=block
+           --who=nosleep --why="user asked the machine to stay awake")
+  label=""
+fi
 
 active() {
   systemctl --user --quiet is-active "$unit"
@@ -21,39 +49,40 @@ start() {
     echo "nosleep: invalid duration '$duration'" >&2
     exit 2
   fi
+  # The screen inhibitor needs GNOME; fail clearly rather than via systemd-run
+  if [ "$target" = screen ] && ! command -v gnome-session-inhibit >/dev/null; then
+    echo "nosleep: gnome-session-inhibit not found (needs a GNOME session)" >&2
+    exit 1
+  fi
   # Replace any running instance so a new duration takes effect
   systemctl --user stop "$unit" 2>/dev/null || true
-  # systemd-run resolves systemd-inhibit from our PATH; the inner sleep is
-  # resolved by systemd-inhibit inside the unit's environment
-  systemd-run --user --quiet --collect --unit=nosleep \
-    --description="Hold sleep/lid-switch inhibitor (nosleep)" \
-    systemd-inhibit \
-      --what=sleep:handle-lid-switch \
-      --mode=block \
-      --who=nosleep \
-      --why="user asked the machine to stay awake" \
+  # systemd-run resolves the inhibitor command from our PATH; the inner sleep
+  # is resolved inside the unit's environment
+  systemd-run --user --quiet --collect --unit="$unit_name" \
+    --description="$description" \
+    "${inhibit[@]}" \
     sleep "$duration"
   if [ "$duration" = infinity ]; then
-    echo "nosleep: on (until 'nosleep off')"
+    echo "nosleep: ${label}on (until 'nosleep ${label}off')"
   else
-    echo "nosleep: on for $duration"
+    echo "nosleep: ${label}on for $duration"
   fi
 }
 
 stop() {
   if active; then
     systemctl --user stop "$unit"
-    echo "nosleep: off"
+    echo "nosleep: ${label}off"
   else
-    echo "nosleep: already off"
+    echo "nosleep: ${label}already off"
   fi
 }
 
 status() {
   if active; then
-    echo "nosleep: on (since $(systemctl --user show "$unit" --property=ActiveEnterTimestamp --value))"
+    echo "nosleep: ${label}on (since $(systemctl --user show "$unit" --property=ActiveEnterTimestamp --value))"
   else
-    echo "nosleep: off"
+    echo "nosleep: ${label}off"
   fi
 }
 
@@ -67,7 +96,7 @@ case "$cmd" in
     if [[ "$cmd" =~ $duration_re ]]; then
       start "$cmd"
     else
-      echo "usage: nosleep [on [duration] | off | status | <duration>]   e.g. 'nosleep 2h'" >&2
+      echo "usage: nosleep [screen] [on [duration] | off | status | <duration>]   e.g. 'nosleep 2h', 'nosleep screen on'" >&2
       exit 2
     fi
     ;;
