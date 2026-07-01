@@ -1,12 +1,13 @@
-// Quick Settings toggles + top-bar indicator for the nosleep inhibitors.
+// Quick Settings toggles + top-bar indicators for the nosleep inhibitors.
 // Two independent stay-awake controls, each backed by its own transient
-// systemd user unit:
+// systemd user unit, and each with its own distinct top-bar icon so the
+// panel tells them apart at a glance (coffee cup vs. display, both when both):
 //   • "Stay Awake"     — blocks suspend and lid-switch sleep (logind lock)
 //   • "Keep Screen On" — blocks GNOME idle, so the screen never blanks/locks
 //
 // Deliberately stateless: each systemd user unit is the single source of
 // truth. Clicking only starts/stops the transient unit over D-Bus; a
-// toggle's `checked` and the indicator follow the real unit state, so the
+// toggle's `checked` and its top-bar icon follow the real unit state, so the
 // UI can never desync from (or lose) an inhibitor. The bundled nosleep CLI
 // drives the sleep unit, so either side can stop what the other started.
 //
@@ -53,16 +54,22 @@ function unitObjectPath(unit) {
 // signals. buildArgv() returns the inhibitor command (absolute paths, as
 // ExecStart requires) or null when a required program is missing.
 class InhibitorToggle {
-    constructor(bus, cancellable, {title, gicon, unit, description, buildArgv, onChanged}) {
+    constructor(bus, cancellable, {title, gicon, indicator, unit, description, buildArgv}) {
         this._bus = bus;
         this._cancellable = cancellable;
         this._unit = unit;
         this._unitPath = unitObjectPath(unit);
         this._description = description;
         this._buildArgv = buildArgv;
-        this._onChanged = onChanged;
         this.active = false;
         this._startRetryId = 0;
+
+        // This inhibitor's own top-bar icon, shown only while it is active, so
+        // the panel reads the same as the toggles: coffee cup for Stay Awake,
+        // display for Keep Screen On, both side-by-side when both are on.
+        this._indicator = indicator;
+        this._indicator.gicon = gicon;
+        this._indicator.visible = false;
 
         // toggleMode off: a click must not flip `checked` optimistically,
         // only the unit-state refresh may
@@ -151,7 +158,7 @@ class InhibitorToggle {
     _setActive(active) {
         this.active = active;
         this.toggle.checked = active;
-        this._onChanged();
+        this._indicator.visible = active;
     }
 
     _toggleUnit() {
@@ -203,6 +210,7 @@ class InhibitorToggle {
         this._signalIds = [];
         this.toggle.disconnectObject(this);
         this.toggle.destroy();
+        this._indicator.destroy();
     }
 }
 
@@ -214,14 +222,9 @@ class NosleepIndicator extends SystemIndicator {
         const gicon = Gio.icon_new_for_string(
             `${extensionObject.path}/icons/nosleep-symbolic.svg`);
         // Keep Screen On gets a distinct, display-themed icon so the two
-        // toggles read differently at a glance; a bare name resolves to a
-        // themed icon from the active icon theme.
+        // toggles — and their top-bar icons — read differently at a glance; a
+        // bare name resolves to a themed icon from the active icon theme.
         const screenGicon = Gio.icon_new_for_string('video-display-symbolic');
-
-        // One shared top-bar indicator: visible while either inhibitor is on
-        this._icon = this._addIndicator();
-        this._icon.gicon = gicon;
-        this._icon.visible = false;
 
         this._bus = Gio.DBus.session;
         this._cancellable = new Gio.Cancellable();
@@ -246,14 +249,17 @@ class NosleepIndicator extends SystemIndicator {
                 }
             });
 
-        const onChanged = () => this._updateIndicator();
+        // Each toggle owns its own top-bar icon, added in Stay Awake then Keep
+        // Screen On order so the panel lays them out left-to-right the same
+        // way. There is no shared indicator: the panel is exactly the union of
+        // the active inhibitors' icons.
         this._toggles = [
             new InhibitorToggle(this._bus, this._cancellable, {
                 title: _('Stay Awake'),
                 gicon,
+                indicator: this._addIndicator(),
                 unit: 'nosleep.service',
                 description: 'Hold sleep/lid-switch inhibitor (nosleep)',
-                onChanged,
                 // Resolved to absolute paths because ExecStart requires them.
                 buildArgv: () => {
                     const inhibit = GLib.find_program_in_path('systemd-inhibit');
@@ -275,9 +281,9 @@ class NosleepIndicator extends SystemIndicator {
             new InhibitorToggle(this._bus, this._cancellable, {
                 title: _('Keep Screen On'),
                 gicon: screenGicon,
+                indicator: this._addIndicator(),
                 unit: 'nosleep-screen.service',
                 description: 'Hold idle inhibitor (nosleep)',
-                onChanged,
                 // gnome-session-inhibit, not systemd-inhibit: gnome-shell's
                 // idle timer (screen blank/lock) only honors GNOME session
                 // inhibitors, not a logind idle lock. Absolute paths for
@@ -301,10 +307,6 @@ class NosleepIndicator extends SystemIndicator {
         ];
         for (const toggle of this._toggles)
             this.quickSettingsItems.push(toggle.toggle);
-    }
-
-    _updateIndicator() {
-        this._icon.visible = this._toggles.some(toggle => toggle.active);
     }
 
     // panel.js addExternalIndicator inserts our toggles before a sibling;
