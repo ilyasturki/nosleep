@@ -88,6 +88,11 @@ home.packages = [
 ];
 ```
 
+## Credits
+
+The coffee-cup icon is from the [Caffeine GNOME Shell extension](https://github.com/eonpatapon/gnome-shell-extension-caffeine)
+by eonpatapon, reused under GPL-2.0.
+
 ## License
 
 GPL-2.0-or-later
