@@ -62,6 +62,7 @@ class InhibitorToggle {
         this._buildArgv = buildArgv;
         this._onChanged = onChanged;
         this.active = false;
+        this._startRetryId = 0;
 
         // toggleMode off: a click must not flip `checked` optimistically,
         // only the unit-state refresh may
@@ -86,7 +87,9 @@ class InhibitorToggle {
         this._refresh();
     }
 
-    _managerCall(method, params) {
+    // onError(e) may claim a non-cancelled failure by returning true (e.g. to
+    // retry a UnitExists race); otherwise the failure is logged.
+    _managerCall(method, params, onError) {
         this._bus.call(
             BUS_NAME, MANAGER_PATH, MANAGER_IFACE, method, params, null,
             Gio.DBusCallFlags.NONE, -1, this._cancellable,
@@ -95,8 +98,11 @@ class InhibitorToggle {
                     bus.call_finish(res);
                     this._refresh();
                 } catch (e) {
-                    if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
-                        console.warn(`nosleep: ${method} failed: ${e.message}`);
+                    if (e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                        return;
+                    if (onError?.(e))
+                        return;
+                    console.warn(`nosleep: ${method} failed: ${e.message}`);
                 }
             });
     }
@@ -155,7 +161,7 @@ class InhibitorToggle {
             this._startUnit();
     }
 
-    _startUnit() {
+    _startUnit(mayRetry = true) {
         // Same transient unit systemd-run would create: an inhibitor lock
         // held by a sleeping process, GC'd by systemd once it stops.
         const argv = this._buildArgv();
@@ -169,14 +175,32 @@ class InhibitorToggle {
                 ['ExecStart', new GLib.Variant('a(sasb)', [[argv[0], argv, false]])],
             ],
             [],
-        ]));
+        ]), e => {
+            // A just-stopped instance can still be deactivating (or pending
+            // GC) under the same name, which systemd rejects with UnitExists.
+            // Retry once, after it is collected, so a quick off-then-on click
+            // isn't silently dropped.
+            if (mayRetry && this._startRetryId === 0 &&
+                Gio.DBusError.get_remote_error(e) === 'org.freedesktop.systemd1.UnitExists') {
+                this._startRetryId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 250, () => {
+                    this._startRetryId = 0;
+                    this._startUnit(false);
+                    return GLib.SOURCE_REMOVE;
+                });
+                return true;
+            }
+            return false;
+        });
     }
 
     destroy() {
+        if (this._startRetryId) {
+            GLib.source_remove(this._startRetryId);
+            this._startRetryId = 0;
+        }
         for (const id of this._signalIds)
             this._bus.signal_unsubscribe(id);
         this._signalIds = [];
-        this._managerCall = () => {};
         this.toggle.disconnectObject(this);
         this.toggle.destroy();
     }
@@ -211,7 +235,13 @@ class NosleepIndicator extends SystemIndicator {
                 try {
                     bus.call_finish(res);
                 } catch (e) {
-                    if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                    // AlreadySubscribed is benign: the shell's shared session
+                    // connection is subscribed process-wide (by us on a prior
+                    // enable, or another consumer), so signals still flow — and
+                    // we deliberately never Unsubscribe, which would drop it out
+                    // from under those other users.
+                    if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED) &&
+                        Gio.DBusError.get_remote_error(e) !== 'org.freedesktop.systemd1.AlreadySubscribed')
                         console.warn(`nosleep: Subscribe failed: ${e.message}`);
                 }
             });

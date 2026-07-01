@@ -13,6 +13,9 @@
 set -euo pipefail
 
 duration_re='^[0-9]+(\.[0-9]+)?[smhd]?$'
+# A zero-length duration passes duration_re but makes the inner `sleep` exit at
+# once, releasing the inhibitor while we'd report "on"; reject it too.
+zero_re='^0+(\.0+)?[smhd]?$'
 
 # Target selection: `nosleep screen ...` retargets every verb below to the
 # screen/idle inhibitor; otherwise we drive the sleep inhibitor. Each target
@@ -43,9 +46,11 @@ active() {
 
 start() {
   local duration="${1:-infinity}"
-  # Validate before systemd-run: sleep rejecting the duration would kill
-  # the inhibitor instantly while we report success
-  if [ "$duration" != infinity ] && ! [[ "$duration" =~ $duration_re ]]; then
+  # Validate before systemd-run: an invalid or zero-length duration would let
+  # the inner `sleep` exit immediately, releasing the inhibitor while we report
+  # success.
+  if [ "$duration" != infinity ] &&
+     { ! [[ "$duration" =~ $duration_re ]] || [[ "$duration" =~ $zero_re ]]; }; then
     echo "nosleep: invalid duration '$duration'" >&2
     exit 2
   fi
@@ -56,12 +61,32 @@ start() {
   fi
   # Replace any running instance so a new duration takes effect
   systemctl --user stop "$unit" 2>/dev/null || true
-  # systemd-run resolves the inhibitor command from our PATH; the inner sleep
-  # is resolved inside the unit's environment
-  systemd-run --user --quiet --collect --unit="$unit_name" \
-    --description="$description" \
-    "${inhibit[@]}" \
-    sleep "$duration"
+  # systemd-run returns once the unit has *started*, not once the inhibitor
+  # command proves itself (it and the inner `sleep` resolve in the unit's own
+  # environment, not ours). And `stop` can return before systemd has GC'd the
+  # old unit, so a same-name start can briefly lose to "unit already exists" —
+  # retry once.
+  local attempt
+  for attempt in 1 2; do
+    if systemd-run --user --quiet --collect --unit="$unit_name" \
+         --description="$description" \
+         "${inhibit[@]}" \
+         sleep "$duration"; then
+      break
+    elif [ "$attempt" = 2 ]; then
+      echo "nosleep: failed to start ${label}inhibitor" >&2
+      exit 1
+    fi
+    sleep 0.2
+  done
+  # A broken inhibitor (missing binary, or no reachable GNOME session over SSH)
+  # exits at once; give it a beat, then confirm it is really holding rather than
+  # printing a false "on".
+  sleep 0.2
+  if ! active; then
+    echo "nosleep: ${label}inhibitor failed to start (is its command available?)" >&2
+    exit 1
+  fi
   if [ "$duration" = infinity ]; then
     echo "nosleep: ${label}on (until 'nosleep ${label}off')"
   else
