@@ -36,7 +36,7 @@
 
           extension = pkgs.stdenvNoCC.mkDerivation {
             pname = "gnome-shell-extension-nosleep";
-            version = "1.0.2";
+            version = "1.1.0";
             src = ./extension;
             installPhase = ''
               runHook preInstall
