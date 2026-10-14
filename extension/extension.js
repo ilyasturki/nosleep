@@ -24,9 +24,11 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 
-import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {Extension, gettext as _, ngettext} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {formatTime} from 'resource:///org/gnome/shell/misc/dateUtils.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import {QuickToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
+import {PopupMenuItem} from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import {QuickMenuToggle, QuickToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
 
 const BUS_NAME = 'org.freedesktop.systemd1';
 const MANAGER_PATH = '/org/freedesktop/systemd1';
@@ -48,19 +50,37 @@ function unitObjectPath(unit) {
     return `${MANAGER_PATH}/unit/${escaped}`;
 }
 
+function formatDuration(seconds) {
+    const minutes = seconds / 60;
+    if (minutes % 60 === 0)
+        return ngettext('%d hour', '%d hours', minutes / 60).format(minutes / 60);
+    return ngettext('%d minute', '%d minutes', minutes).format(minutes);
+}
+
+// ExecStart's last argv entry is the inner `sleep` operand (whole seconds, or
+// "infinity"), so exec start + operand is when the inhibitor lets go.
+function deadlineOf(execStart) {
+    const [, argv, , startUsec] = execStart[0] ?? [];
+    const seconds = Number(argv?.at(-1));
+    if (!startUsec || !Number.isInteger(seconds))
+        return null;
+    return new Date(startUsec / 1000 + seconds * 1000);
+}
+
 // Drives one transient-unit-backed toggle: owns its QuickToggle, watches its
 // unit's ActiveState over D-Bus, and mirrors it onto `checked`. The unit is
 // the source of truth — a click only starts/stops it; state comes back via
-// signals. buildArgv() returns the inhibitor command (absolute paths, as
-// ExecStart requires) or null when a required program is missing.
+// signals. `command` is the inhibitor wrapping the inner `sleep`; `durations`
+// (seconds) adds a menu to start it for a limited time.
 class InhibitorToggle {
-    constructor(bus, cancellable, {title, gicon, indicator, unit, description, buildArgv}) {
+    constructor(bus, cancellable, {title, gicon, indicator, unit, description, command, durations = []}) {
         this._bus = bus;
         this._cancellable = cancellable;
+        this._title = title;
         this._unit = unit;
         this._unitPath = unitObjectPath(unit);
         this._description = description;
-        this._buildArgv = buildArgv;
+        this._command = command;
         this.active = false;
         this._startRetryId = 0;
 
@@ -73,8 +93,18 @@ class InhibitorToggle {
 
         // toggleMode off: a click must not flip `checked` optimistically,
         // only the unit-state refresh may
-        this.toggle = new QuickToggle({title, gicon, toggleMode: false});
+        const Toggle = durations.length ? QuickMenuToggle : QuickToggle;
+        this.toggle = new Toggle({title, gicon, toggleMode: false});
         this.toggle.connectObject('clicked', () => this._toggleUnit(), this);
+        if (durations.length) {
+            this.toggle.menu.setHeader(gicon, title);
+            for (const seconds of [...durations, null]) {
+                const item = new PopupMenuItem(
+                    seconds ? formatDuration(seconds) : _('Until turned off'));
+                item.connect('activate', () => this._restartUnit(seconds));
+                this.toggle.menu.addMenuItem(item);
+            }
+        }
 
         this._signalIds = [
             this._bus.signal_subscribe(
@@ -95,22 +125,25 @@ class InhibitorToggle {
     }
 
     // onError(e) may claim a non-cancelled failure by returning true (e.g. to
-    // retry a UnitExists race); otherwise the failure is logged.
-    _managerCall(method, params, onError) {
+    // retry a UnitExists race); otherwise it is notified under `failure`.
+    _managerCall(method, params, failure, {onSuccess, onError} = {}) {
         this._bus.call(
             BUS_NAME, MANAGER_PATH, MANAGER_IFACE, method, params, null,
             Gio.DBusCallFlags.NONE, -1, this._cancellable,
             (bus, res) => {
                 try {
                     bus.call_finish(res);
-                    this._refresh();
                 } catch (e) {
                     if (e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
                         return;
-                    if (onError?.(e))
-                        return;
-                    console.warn(`nosleep: ${method} failed: ${e.message}`);
+                    if (!onError?.(e)) {
+                        Gio.DBusError.strip_remote_error(e);
+                        Main.notifyError(failure, e.message);
+                    }
+                    return;
                 }
+                this._refresh();
+                onSuccess?.();
             });
     }
 
@@ -139,39 +172,68 @@ class InhibitorToggle {
     }
 
     _getActiveState(path) {
+        this._getProperty(path, 'org.freedesktop.systemd1.Unit', 'ActiveState', state => {
+            if (state !== 'active' && state !== 'activating') {
+                this._setActive(false);
+                return;
+            }
+            this._getProperty(path, 'org.freedesktop.systemd1.Service', 'ExecStart',
+                execStart => this._setActive(true, deadlineOf(execStart)));
+        });
+    }
+
+    _getProperty(path, iface, name, onValue) {
         this._bus.call(
             BUS_NAME, path, 'org.freedesktop.DBus.Properties', 'Get',
-            new GLib.Variant('(ss)', ['org.freedesktop.systemd1.Unit', 'ActiveState']),
+            new GLib.Variant('(ss)', [iface, name]),
             null, Gio.DBusCallFlags.NONE, -1, this._cancellable,
             (bus, res) => {
+                let value;
                 try {
-                    const [state] = bus.call_finish(res).recursiveUnpack();
-                    this._setActive(state === 'active' || state === 'activating');
+                    [value] = bus.call_finish(res).recursiveUnpack();
                 } catch (e) {
                     // unit can be GC'd between GetUnit and this read
                     if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
                         this._setActive(false);
+                    return;
                 }
+                onValue(value);
             });
     }
 
-    _setActive(active) {
+    _setActive(active, deadline = null) {
         this.active = active;
         this.toggle.checked = active;
+        this.toggle.subtitle = deadline
+            ? _('Until %s').format(formatTime(deadline, {timeOnly: true}))
+            : null;
         this._indicator.visible = active;
     }
 
     _toggleUnit() {
         if (this.toggle.checked)
-            this._managerCall('StopUnit', new GLib.Variant('(ss)', [this._unit, 'replace']));
+            this._stopUnit();
         else
             this._startUnit();
     }
 
-    _startUnit(mayRetry = true) {
+    _stopUnit(onSuccess) {
+        this._managerCall('StopUnit', new GLib.Variant('(ss)', [this._unit, 'replace']),
+            _('Could not turn off %s').format(this._title), {onSuccess});
+    }
+
+    // A running instance must stop first: its `sleep` operand is fixed.
+    _restartUnit(seconds) {
+        if (this.toggle.checked)
+            this._stopUnit(() => this._startUnit(seconds));
+        else
+            this._startUnit(seconds);
+    }
+
+    _startUnit(seconds = null, mayRetry = true) {
         // Same transient unit systemd-run would create: an inhibitor lock
         // held by a sleeping process, GC'd by systemd once it stops.
-        const argv = this._buildArgv();
+        const argv = this._buildArgv(seconds);
         if (!argv)
             return;
         this._managerCall('StartTransientUnit', new GLib.Variant('(ssa(sv)a(sa(sv)))', [
@@ -182,7 +244,7 @@ class InhibitorToggle {
                 ['ExecStart', new GLib.Variant('a(sasb)', [[argv[0], argv, false]])],
             ],
             [],
-        ]), e => {
+        ]), _('Could not turn on %s').format(this._title), {onError: e => {
             // A just-stopped instance can still be deactivating (or pending
             // GC) under the same name, which systemd rejects with UnitExists.
             // Retry once, after it is collected, so a quick off-then-on click
@@ -191,13 +253,28 @@ class InhibitorToggle {
                 Gio.DBusError.get_remote_error(e) === 'org.freedesktop.systemd1.UnitExists') {
                 this._startRetryId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 250, () => {
                     this._startRetryId = 0;
-                    this._startUnit(false);
+                    this._startUnit(seconds, false);
                     return GLib.SOURCE_REMOVE;
                 });
                 return true;
             }
             return false;
-        });
+        }});
+    }
+
+    // Absolute paths, as ExecStart requires.
+    _buildArgv(seconds) {
+        const [program, ...args] = this._command;
+        const programs = [program, 'sleep'];
+        const paths = programs.map(name => GLib.find_program_in_path(name));
+        const missing = paths.indexOf(null);
+        if (missing !== -1) {
+            Main.notifyError(_('Could not turn on %s').format(this._title),
+                _('%s was not found in PATH').format(programs[missing]));
+            return null;
+        }
+        const [inhibit, sleep] = paths;
+        return [inhibit, ...args, sleep, seconds ? String(seconds) : 'infinity'];
     }
 
     destroy() {
@@ -209,6 +286,9 @@ class InhibitorToggle {
             this._bus.signal_unsubscribe(id);
         this._signalIds = [];
         this.toggle.disconnectObject(this);
+        // Quick Settings parents a toggle's menu to its overlay, so destroying
+        // the toggle alone would leave the menu behind.
+        this.toggle.menu?.destroy();
         this.toggle.destroy();
         this._indicator.destroy();
     }
@@ -260,23 +340,14 @@ class NosleepIndicator extends SystemIndicator {
                 indicator: this._addIndicator(),
                 unit: 'nosleep.service',
                 description: 'Hold sleep/lid-switch inhibitor (nosleep)',
-                // Resolved to absolute paths because ExecStart requires them.
-                buildArgv: () => {
-                    const inhibit = GLib.find_program_in_path('systemd-inhibit');
-                    const sleep = GLib.find_program_in_path('sleep');
-                    if (!inhibit || !sleep) {
-                        console.error('nosleep: systemd-inhibit or sleep not found in PATH');
-                        return null;
-                    }
-                    return [
-                        inhibit,
-                        '--what=sleep:handle-lid-switch',
-                        '--mode=block',
-                        '--who=nosleep',
-                        '--why=user asked the machine to stay awake',
-                        sleep, 'infinity',
-                    ];
-                },
+                command: [
+                    'systemd-inhibit',
+                    '--what=sleep:handle-lid-switch',
+                    '--mode=block',
+                    '--who=nosleep',
+                    '--why=user asked the machine to stay awake',
+                ],
+                durations: [15 * 60, 30 * 60, 60 * 60],
             }),
             new InhibitorToggle(this._bus, this._cancellable, {
                 title: _('Keep Screen On'),
@@ -286,23 +357,13 @@ class NosleepIndicator extends SystemIndicator {
                 description: 'Hold idle inhibitor (nosleep)',
                 // gnome-session-inhibit, not systemd-inhibit: gnome-shell's
                 // idle timer (screen blank/lock) only honors GNOME session
-                // inhibitors, not a logind idle lock. Absolute paths for
-                // ExecStart; the inner sleep holds the inhibitor until stopped.
-                buildArgv: () => {
-                    const inhibit = GLib.find_program_in_path('gnome-session-inhibit');
-                    const sleep = GLib.find_program_in_path('sleep');
-                    if (!inhibit || !sleep) {
-                        console.error('nosleep: gnome-session-inhibit or sleep not found in PATH');
-                        return null;
-                    }
-                    return [
-                        inhibit,
-                        '--inhibit=idle',
-                        '--app-id=nosleep',
-                        '--reason=user asked to keep the screen on',
-                        sleep, 'infinity',
-                    ];
-                },
+                // inhibitors, not a logind idle lock.
+                command: [
+                    'gnome-session-inhibit',
+                    '--inhibit=idle',
+                    '--app-id=nosleep',
+                    '--reason=user asked to keep the screen on',
+                ],
             }),
         ];
         for (const toggle of this._toggles)

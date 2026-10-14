@@ -1,7 +1,7 @@
 {
   "uuid": "nosleep@ilyasturki.com",
   "name": "Nosleep",
-  "description": "Two Quick Settings toggles (plus a companion CLI): \"Stay Awake\" blocks suspend and lid-switch sleep, and \"Keep Screen On\" blocks GNOME idle so the screen never blanks or locks. Each holds its inhibitor in its own transient systemd user unit — the single source of truth, so a toggle can never desync from the real inhibitor and normal behavior returns on logout.",
+  "description": "Two Quick Settings toggles (plus a companion CLI): \"Stay Awake\" blocks suspend and lid-switch sleep, until turned off or for 15, 30 or 60 minutes, and \"Keep Screen On\" blocks GNOME idle so the screen never blanks or locks. Each holds its inhibitor in its own transient systemd user unit — the single source of truth, so a toggle can never desync from the real inhibitor and normal behavior returns on logout.",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "session-modes": ["user", "unlock-dialog"],
   "url": "https://github.com/ilyasturki/nosleep",

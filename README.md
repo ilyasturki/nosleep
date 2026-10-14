@@ -43,10 +43,10 @@ Both work from the Quick Settings toggles and the CLI (`nosleep` and
 
 ```
 nosleep                # toggle stay-awake (blocks suspend + lid)
-nosleep 2h             # stay awake for 2 hours (also: 90m, 45s, 1d)
+nosleep 2h             # stay awake for 2 hours (also: 90m, 45s, 1.5h, 1d)
 nosleep on             # stay awake until turned off
 nosleep off
-nosleep status
+nosleep status         # on/off, and when a timed one ends
 
 nosleep screen         # toggle keep-screen-on (blocks GNOME idle)
 nosleep screen on      # keep the screen on until turned off
@@ -70,6 +70,13 @@ sleep) and "Keep Screen On" (blocks GNOME idle so the screen never blanks) —
 with a top-bar indicator while either is active. Both stay on the lock
 screen, so you can confirm or flip stay-awake without unlocking. Supports
 GNOME Shell 45 to 50.
+
+Clicking a toggle holds its inhibitor until you turn it off. Stay Awake's
+menu can instead hold it for 15, 30 or 60 minutes; a timed inhibitor shows
+when it ends ("Until 14:35") under the toggle's title, whether the toggle or
+the CLI started it. The deadline lives in the unit itself (its inner `sleep`
+exits on time and the unit stops cleanly), so nothing keeps counting if
+GNOME Shell restarts.
 
 - From [extensions.gnome.org](https://extensions.gnome.org/extension/10230/nosleep/)
 - Manual: `make install`, then re-log and enable with

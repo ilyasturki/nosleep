@@ -12,10 +12,22 @@
 # screen; only a GNOME session inhibitor does, hence gnome-session-inhibit.)
 set -euo pipefail
 
-duration_re='^[0-9]+(\.[0-9]+)?[smhd]?$'
-# A zero-length duration passes duration_re but makes the inner `sleep` exit at
-# once, releasing the inhibitor while we'd report "on"; reject it too.
-zero_re='^0+(\.0+)?[smhd]?$'
+duration_re='^([0-9]+)(\.([0-9]{1,3}))?([smhd]?)$'
+
+# The inner `sleep` gets whole seconds: its operand is how the extension and
+# `deadline` read back when the inhibitor lets go.
+to_seconds() {
+  [[ "$1" =~ $duration_re ]] || return 1
+  local int="${BASH_REMATCH[1]}" frac="${BASH_REMATCH[3]}" mult
+  case "${BASH_REMATCH[4]}" in
+    m) mult=60 ;;
+    h) mult=3600 ;;
+    d) mult=86400 ;;
+    *) mult=1 ;;
+  esac
+  local scale=$((10 ** ${#frac}))
+  echo $(( (10#$int * scale + 10#${frac:-0}) * mult / scale ))
+}
 
 # Target selection: `nosleep screen ...` retargets every verb below to the
 # screen/idle inhibitor; otherwise we drive the sleep inhibitor. Each target
@@ -44,15 +56,37 @@ active() {
   systemctl --user --quiet is-active "$unit"
 }
 
+# When the inner `sleep` lets go, in epoch seconds: exec start + its operand,
+# the same derivation the extension uses. Prints nothing for "infinity".
+deadline() {
+  local exec start seconds operand_re='argv\[\]=[^;]* ([0-9]+) ;'
+  exec=$(systemctl --user show -P ExecStart "$unit")
+  [[ "$exec" =~ $operand_re ]] || return 0
+  seconds="${BASH_REMATCH[1]}"
+  start=$(systemctl --user show -P ExecMainStartTimestamp --timestamp=unix "$unit")
+  [ -n "$start" ] || return 0
+  echo $(( ${start#@} + seconds ))
+}
+
+until_suffix() {
+  local at
+  at=$(deadline)
+  if [ -n "$at" ]; then
+    echo " until $(date -d "@$at" +%H:%M)"
+  fi
+}
+
 start() {
-  local duration="${1:-infinity}"
+  local duration="${1:-infinity}" seconds=infinity
   # Validate before systemd-run: an invalid or zero-length duration would let
   # the inner `sleep` exit immediately, releasing the inhibitor while we report
   # success.
-  if [ "$duration" != infinity ] &&
-     { ! [[ "$duration" =~ $duration_re ]] || [[ "$duration" =~ $zero_re ]]; }; then
-    echo "nosleep: invalid duration '$duration'" >&2
-    exit 2
+  if [ "$duration" != infinity ]; then
+    seconds=$(to_seconds "$duration") || seconds=0
+    if [ "$seconds" -eq 0 ]; then
+      echo "nosleep: invalid duration '$duration'" >&2
+      exit 2
+    fi
   fi
   # The screen inhibitor needs GNOME; fail clearly rather than via systemd-run
   if [ "$target" = screen ] && ! command -v gnome-session-inhibit >/dev/null; then
@@ -71,7 +105,7 @@ start() {
     if systemd-run --user --quiet --collect --unit="$unit_name" \
          --description="$description" \
          "${inhibit[@]}" \
-         sleep "$duration"; then
+         sleep "$seconds"; then
       break
     elif [ "$attempt" = 2 ]; then
       echo "nosleep: failed to start ${label}inhibitor" >&2
@@ -87,10 +121,10 @@ start() {
     echo "nosleep: ${label}inhibitor failed to start (is its command available?)" >&2
     exit 1
   fi
-  if [ "$duration" = infinity ]; then
+  if [ "$seconds" = infinity ]; then
     echo "nosleep: ${label}on (until 'nosleep ${label}off')"
   else
-    echo "nosleep: ${label}on for $duration"
+    echo "nosleep: ${label}on for $duration$(until_suffix)"
   fi
 }
 
@@ -105,7 +139,7 @@ stop() {
 
 status() {
   if active; then
-    echo "nosleep: ${label}on (since $(systemctl --user show "$unit" --property=ActiveEnterTimestamp --value))"
+    echo "nosleep: ${label}on$(until_suffix) (since $(systemctl --user show "$unit" --property=ActiveEnterTimestamp --value))"
   else
     echo "nosleep: ${label}off"
   fi
