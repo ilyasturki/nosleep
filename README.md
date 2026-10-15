@@ -1,88 +1,34 @@
 # nosleep
 
-Tell the machine to stay awake.
-
-A GNOME Quick Settings toggle and a CLI that block suspend and lid-switch
-sleep, plus a second toggle that keeps the screen on. Each is backed by a
-transient systemd user unit that *is* the state, so the controls can never
-desync from it — and because the CLI and sleep toggle share one unit, they
-can never disagree about whether the machine may sleep.
+Keep your Linux machine awake, from GNOME Quick Settings or the terminal.
 
 <p align="center">
-  <img src="docs/quick-settings.png" width="380"
-       alt="The Stay Awake toggle active in GNOME Quick Settings, with the indicator in the top bar">
+  <img src="docs/quick-settings.png" width="402"
+       alt="The Stay Awake and Keep Screen On toggles in GNOME Quick Settings, Stay Awake on until 13:41">
 </p>
 
-## Why another Caffeine?
+| To | Click | Or run |
+| --- | --- | --- |
+| Keep running with the lid closed | Stay Awake | `nosleep` |
+| Same, for a while | Stay Awake's menu | `nosleep 2h` |
+| Keep the screen on | Keep Screen On | `nosleep screen` |
+| Stop | the toggle again | `nosleep off`, `nosleep screen off` |
 
-State. Most keep-awake tools hold the inhibitor inside their own process or
-track it in settings, and the two drift apart: a stale toggle, a lost
-inhibitor after a shell restart, a lock that outlives the session.
+Stay Awake still lets the screen lock. A top-bar icon shows what's on, and
+both turn off on logout.
 
-nosleep keeps no state at all. Turning it on creates a transient systemd
-user unit (`nosleep.service`) that holds a `systemd-inhibit` block lock on
-sleep and lid-close. The unit **is** the state:
+## Why not Caffeine?
 
-- The toggles and indicator mirror their units over D-Bus, so they cannot
-  desync, even across `gnome-shell` restarts.
-- The unit dies on logout/reboot, so normal sleep behavior always comes
-  back on its own.
-- Anything can inspect or stop it: `systemctl --user status nosleep`.
-- The CLI and the extension are interchangeable: either can stop what the
-  other started, and the toggle lights up when a script enables it.
+Caffeine holds its inhibitor inside GNOME Shell. nosleep runs it as a systemd
+user service, so a script can call `nosleep 2h`, the toggle lights up, and
+`systemctl --user status nosleep` shows the same state.
 
-**Scope.** *Stay Awake* blocks *sleep* (suspend and lid-close), not *idle* —
-it keeps the machine running through a download or a long job, but the screen
-may still blank and lock. *Keep Screen On* also blocks GNOME idle, so the
-screen never blanks or locks: a presentation mode. Use either, or both —
-block sleep but let the screen lock for security, or keep everything awake.
-Both work from the Quick Settings toggles and the CLI (`nosleep` and
-`nosleep screen`).
+## Install
 
-## CLI
+- GNOME extension (GNOME 45 to 50): [extensions.gnome.org](https://extensions.gnome.org/extension/10230/nosleep/), or `make install` from a clone, then log out and back in and run `gnome-extensions enable nosleep@ilyasturki.com`
+- CLI: put `bin/nosleep` on your `PATH`, or `nix run github:ilyasturki/nosleep`
 
-```
-nosleep                # toggle stay-awake (blocks suspend + lid)
-nosleep 2h             # stay awake for 2 hours (also: 90m, 45s, 1.5h, 1d)
-nosleep on             # stay awake until turned off
-nosleep off
-nosleep status         # on/off, and when a timed one ends
-
-nosleep screen         # toggle keep-screen-on (blocks GNOME idle)
-nosleep screen on      # keep the screen on until turned off
-nosleep screen 45m     # keep the screen on for 45 minutes
-nosleep screen off
-nosleep screen status
-```
-
-Requires `bash` and systemd; `nosleep screen` also needs
-`gnome-session-inhibit`, which any GNOME session already provides. Install by
-dropping `bin/nosleep` on your `PATH`, or on Nix:
-
-```
-nix run github:ilyasturki/nosleep
-```
-
-## GNOME extension
-
-Two Quick Settings toggles — "Stay Awake" (blocks suspend and lid-switch
-sleep) and "Keep Screen On" (blocks GNOME idle so the screen never blanks) —
-with a top-bar indicator while either is active. Both stay on the lock
-screen, so you can confirm or flip stay-awake without unlocking. Supports
-GNOME Shell 45 to 50.
-
-Clicking a toggle holds its inhibitor until you turn it off. Stay Awake's
-menu can instead hold it for 15, 30 or 60 minutes; a timed inhibitor shows
-when it ends ("Until 14:35") under the toggle's title, whether the toggle or
-the CLI started it. The deadline lives in the unit itself (its inner `sleep`
-exits on time and the unit stops cleanly), so nothing keeps counting if
-GNOME Shell restarts.
-
-- From [extensions.gnome.org](https://extensions.gnome.org/extension/10230/nosleep/)
-- Manual: `make install`, then re-log and enable with
-  `gnome-extensions enable nosleep@ilyasturki.com`
-
-### NixOS / home-manager
+NixOS / home-manager:
 
 ```nix
 inputs.nosleep.url = "github:ilyasturki/nosleep";
