@@ -299,6 +299,10 @@ class NosleepIndicator extends SystemIndicator {
     constructor(extensionObject) {
         super();
 
+        // Stay Awake's cup is bundled, so this is a file icon of a -symbolic
+        // SVG. St recolors those the same way as a themed name (CSS fill from
+        // the Quick Settings / panel foreground). A bare name is not in
+        // Adwaita; Keep Screen On can use one, so it does.
         const gicon = Gio.icon_new_for_string(
             `${extensionObject.path}/icons/nosleep-symbolic.svg`);
         // Keep Screen On gets a distinct, display-themed icon so the two
