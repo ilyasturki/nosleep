@@ -2,7 +2,7 @@
   "uuid": "nosleep@ilyasturki.com",
   "name": "Nosleep",
   "description": "Keep your machine awake from Quick Settings.\n\nStay Awake: no suspend, even with the lid closed. Until you turn it off, or for 15, 30 or 60 minutes.\nKeep Screen On: the screen never blanks or locks.\n\nWhy not Caffeine? nosleep keeps the inhibitor in a systemd user service instead of GNOME Shell. A real command (nosleep 2h, nosleep off) controls it from any terminal or script, and the toggle always shows what the command did.",
-  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "shell-version": ["45", "46", "47", "48", "49", "50", "51"],
   "session-modes": ["user", "unlock-dialog"],
   "url": "https://github.com/ilyasturki/nosleep",
   "gettext-domain": "nosleep@ilyasturki.com",
