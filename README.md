@@ -25,7 +25,7 @@ user service, so a script can call `nosleep 2h`, the toggle lights up, and
 
 ## Install
 
-- GNOME extension (GNOME 45 to 50): [extensions.gnome.org](https://extensions.gnome.org/extension/10230/nosleep/), or `make install` from a clone, then log out and back in and run `gnome-extensions enable nosleep@ilyasturki.com`
+- GNOME extension (GNOME 45 to 51): [extensions.gnome.org](https://extensions.gnome.org/extension/10230/nosleep/), or `make install` from a clone, then log out and back in and run `gnome-extensions enable nosleep@ilyasturki.com`
 - CLI: put `bin/nosleep` on your `PATH`, or `nix run github:ilyasturki/nosleep`
 
 NixOS / home-manager:
